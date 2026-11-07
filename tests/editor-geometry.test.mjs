@@ -34,7 +34,14 @@ const data=el('canvas').getContext('2d').getImageData(0,0,1000,1400).data;let bl
 assert(blue>20,'folds visibly rendered in preview');
 const missing=geometry.foldNotice([{index:0,x1:0,x2:20}],2,2,10);assert(missing.text.includes('아래쪽 이음부는 접힘선이 없어 접히지 않습니다'));
 assert.deepEqual(geometry.makeFoldLines([[[0,0],[1,0],[1,100],[0,100]]],[[[0,11],[1,11],[1,100],[0,100]]],[{x:.5,y:10,r:1}],2,1),[]);
-run('s.holeCount=2;draw()');const pdf=run('makePDF()');fs.writeFileSync('/workspace/scratch/strawpick-smooth-qa.pdf',Buffer.from(await pdf.arrayBuffer()));
+run('s.holeCount=2;draw()');
+const svg=run('svgCutlines()');
+assert(svg.match(/<path d="[^"]*Q/),'editor exports a curved exterior');
+assert.equal((svg.match(/<circle /g)||[]).length,2,'straw holes remain separate circles');
+assert(svg.includes('r="36"'),'7mm hole keeps the 0.2mm diameter allowance');
+const pdf=run('makePDF()'),pdfBytes=Buffer.from(await pdf.arrayBuffer());
+assert(pdfBytes.toString('latin1').includes(run('contourPdfPath(geo.contours,72/254,70*72/25.4)')),'PDF contains the exact shared exterior curves');
+fs.writeFileSync('/workspace/scratch/strawpick-smooth-qa.pdf',pdfBytes);
 fs.writeFileSync('/workspace/scratch/strawpick-smooth-qa.png',el('canvas').toBuffer('image/png'));
 await run('restoreSnapshot(JSON.stringify({s:{margin:.5,roundness:0,foldLength:8},current:null,original:null}))');
 assert.equal(run('s.margin'),1.5);assert.equal(run('s.roundness'),2);assert.equal(run('s.foldLength'),2);

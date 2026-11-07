@@ -154,8 +154,8 @@ function bodyRingJoints(bodyLoops,h,radius,index){
 export function bodyRingJoint(bodyLoops,h,radius,index){
  return bodyRingJoints(bodyLoops,h,radius,index)[0]??null;
 }
-export function makeFoldLines(loops,bodyLoops,holes,outerRadius,pxPerMm){
- const gap=pxPerMm,length=2*pxPerMm;
+export function makeFoldLines(loops,bodyLoops,holes,outerRadius,pxPerMm,curveError=0){
+ const gap=pxPerMm+curveError,length=2*pxPerMm;
  return holes.flatMap((h,index)=>{
   // Raster stair steps can create tiny extra intersection arcs. Reject unsafe
   // candidates without hiding another real seam that has enough room.
@@ -237,13 +237,75 @@ function simplifyOpen(points,tolerance){
  if(max<=tolerance)return [points[0],points.at(-1)];
  return [...simplifyOpen(points.slice(0,index+1),tolerance).slice(0,-1),...simplifyOpen(points.slice(index),tolerance)];
 }
-export function smoothOutlines(loops,tolerance){
- return loops.map(loop=>{
-  const mid=Math.floor(loop.length/2);let pts=[...simplifyOpen(loop.slice(0,mid+1),tolerance).slice(0,-1),...simplifyOpen([...loop.slice(mid),loop[0]],tolerance).slice(0,-1)];
-  // Bound smoothing to submillimetre corners, even along very long straight edges.
-  return roundCorners([pts],tolerance*4)[0];
+// Keep the actual Bezier curves, rather than exporting sampled straight lines.
+// Gentle turns share most of the adjoining edges so long facets disappear.
+// At a sharp body/ring junction, cap displacement instead of widening the fillet.
+export function smoothContours(loops,tolerance){
+ const contours=loops.filter(loop=>loop.length>=3).map(loop=>{
+  const mid=Math.floor(loop.length/2);
+  let pts=[...simplifyOpen(loop.slice(0,mid+1),tolerance).slice(0,-1),...simplifyOpen([...loop.slice(mid),loop[0]],tolerance).slice(0,-1)];
+  if(pts.length<3)pts=loop;
+  const corners=pts.map((b,i)=>{
+   const a=pts[(i+pts.length-1)%pts.length],c=pts[(i+1)%pts.length];
+   const ab=Math.hypot(a[0]-b[0],a[1]-b[1]),bc=Math.hypot(c[0]-b[0],c[1]-b[1]);
+   if(!ab||!bc)return {start:b,control:b,end:b};
+   const dot=((b[0]-a[0])*(c[0]-b[0])+(b[1]-a[1])*(c[1]-b[1]))/(ab*bc);
+   const sinHalf=Math.sqrt(Math.max(0,(1-Math.max(-1,Math.min(1,dot)))/2));
+   const d=Math.min(ab/2,bc/2,2*tolerance/Math.max(sinHalf,1e-9));
+   return {start:b.map((v,k)=>v+(a[k]-v)*d/ab),control:b,end:b.map((v,k)=>v+(c[k]-v)*d/bc)};
+  });
+  const segments=[];
+  corners.forEach((corner,i)=>{
+   segments.push({type:'Q',control:corner.control,end:corner.end});
+   const next=corners[(i+1)%corners.length].start;
+   if(Math.hypot(next[0]-corner.end[0],next[1]-corner.end[1])>1e-8)segments.push({type:'L',end:next});
+  });
+  return {start:corners[0].start,segments};
+ });
+ // A conservative subpixel approximation is used only for physical measurements
+ // and clearance checks; canvas, SVG and PDF all use the exact curves below.
+ return {contours,loops:flattenContours(contours)};
+}
+export const CONTOUR_FLATNESS=.005; // 0.0005mm at the editor's 10px/mm.
+export function flattenContours(contours,flatness=CONTOUR_FLATNESS){
+ const midpoint=(a,b)=>a.map((v,k)=>(v+b[k])/2);
+ return contours.map(({start,segments})=>{
+  const points=[[...start]];
+  function quadratic(a,b,c,depth=0){
+   if(depth>=16||pointSegmentDistance(b,a,c)<=flatness){points.push([...c]);return;}
+   const ab=midpoint(a,b),bc=midpoint(b,c),m=midpoint(ab,bc);
+   quadratic(a,ab,m,depth+1);quadratic(m,bc,c,depth+1);
+  }
+  let from=start;
+  for(const segment of segments){
+   if(segment.type==='Q')quadratic(from,segment.control,segment.end);
+   else points.push([...segment.end]);
+   from=segment.end;
+  }
+  if(Math.hypot(points.at(-1)[0]-start[0],points.at(-1)[1]-start[1])<1e-8)points.pop();
+  return points;
  });
 }
+export function contourPath(contours,scale=1){
+ const point=p=>p.map(v=>+(v*scale).toFixed(4)).join(' ');
+ return contours.map(c=>'M'+point(c.start)+c.segments.map(s=>s.type==='Q'?'Q'+point(s.control)+' '+point(s.end):'L'+point(s.end)).join('')+'Z').join('');
+}
+export function contourPdfPath(contours,scale,height){
+ const point=p=>[p[0]*scale,height-p[1]*scale].map(v=>+v.toFixed(4)).join(' ');
+ return contours.map(c=>{
+  let from=c.start;const commands=[point(from)+' m'];
+  for(const s of c.segments){
+   if(s.type==='Q'){
+    const c1=from.map((v,k)=>v+2/3*(s.control[k]-v));
+    const c2=s.end.map((v,k)=>v+2/3*(s.control[k]-v));
+    commands.push(`${point(c1)} ${point(c2)} ${point(s.end)} c`);
+   }else commands.push(point(s.end)+' l');
+   from=s.end;
+  }
+  return commands.join('\n')+'\nh';
+ }).join('\n');
+}
+export function smoothOutlines(loops,tolerance){return smoothContours(loops,tolerance).loops;}
 export function pointBounds(points){let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;for(const [x,y] of points){minX=Math.min(x,minX);maxX=Math.max(x,maxX);minY=Math.min(y,minY);maxY=Math.max(y,maxY)}return {minX,maxX,minY,maxY,cx:(minX+maxX+1)/2,cy:(minY+maxY+1)/2}}
 export function foldNotice(folds,count){
  const missing=Array.from({length:count},(_,i)=>i).filter(i=>!folds.some(f=>f.index===i));
