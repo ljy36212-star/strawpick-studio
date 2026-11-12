@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import vm from 'node:vm';
-import {createRequire} from 'node:module';
+import path from 'node:path';
+import test from 'node:test';
 import * as geometry from '../public/geometry.js';
-const require=createRequire(import.meta.url);
-const {createCanvas,Path2D,Image}=require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES+'/@napi-rs/canvas');
-const els=new Map();function el(id){if(!els.has(id)){const e=['canvas','preview'].includes(id)?createCanvas(500,700):{};Object.assign(e,{value:0,style:{},dataset:{},classList:{toggle(){}},addEventListener(){},setAttribute(){},removeAttribute(){},getAttribute(){return null},scrollIntoView(){},checked:true,open:false,showModal(){this.open=true;this.opens=(this.opens||0)+1},close(){this.open=false}});els.set(id,e)}return els.get(id)}
-const document={getElementById:el,createElement:tag=>tag==='canvas'?createCanvas(1,1):el(tag),querySelector:el,querySelectorAll:()=>[],body:{dataset:{}}};
-const sandbox=vm.createContext({...geometry,document,Path2D,Image,console,TextEncoder,Blob,atob,setTimeout:()=>1,clearTimeout(){},URL});
-vm.runInContext(fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8').replace(/^import .*\n/,''),sandbox);
-function run(s){return vm.runInContext(s,sandbox)}
+import {createEditor,canvasUnavailable} from './helpers/editor-harness.mjs';
+
+test('legacy editor geometry and warning behavior', {skip:canvasUnavailable}, async()=>{
+const {run,el}=createEditor();
 run(`img=document.createElement('canvas');img.width=300;img.height=400;{const q=img.getContext('2d');q.fillStyle='#789c7c';q.fillRect(15,35,170,280)}current=original='test';centerComposition();flowStep=3;draw();`);
 assert(Math.abs(run('geo.bodyBounds.cx/P')-25)<.1,'visible photo centered, ignoring transparent padding');
 assert(Math.abs(run('geo.holeX')-25)<.1,'rings centered');
@@ -41,8 +38,11 @@ assert.equal((svg.match(/<circle /g)||[]).length,2,'straw holes remain separate 
 assert(svg.includes('r="36"'),'7mm hole keeps the 0.2mm diameter allowance');
 const pdf=run('makePDF()'),pdfBytes=Buffer.from(await pdf.arrayBuffer());
 assert(pdfBytes.toString('latin1').includes(run('contourPdfPath(geo.contours,72/254,70*72/25.4)')),'PDF contains the exact shared exterior curves');
-fs.writeFileSync('/workspace/scratch/strawpick-smooth-qa.pdf',pdfBytes);
-fs.writeFileSync('/workspace/scratch/strawpick-smooth-qa.png',el('canvas').toBuffer('image/png'));
+if(process.env.STRAWPICK_TEST_OUTPUT){
+ fs.mkdirSync(process.env.STRAWPICK_TEST_OUTPUT,{recursive:true});
+ fs.writeFileSync(path.join(process.env.STRAWPICK_TEST_OUTPUT,'strawpick-smooth-qa.pdf'),pdfBytes);
+ fs.writeFileSync(path.join(process.env.STRAWPICK_TEST_OUTPUT,'strawpick-smooth-qa.png'),el('canvas').toBuffer('image/png'));
+}
 await run('restoreSnapshot(JSON.stringify({s:{margin:.5,roundness:0,foldLength:8},current:null,original:null}))');
 assert.equal(run('s.margin'),1.5);assert.equal(run('s.roundness'),2);assert.equal(run('s.foldLength'),2);
 console.log('PASS real canvas: padding-aware centering, roundness cuts silhouette, smooth connected contour, fold display, 12 hole combinations with >=1mm clearance, missing-fold warning and PDF export');
@@ -69,3 +69,5 @@ assert.equal(el('foldWarning').hidden,false,'persistent large warning remains af
 run("$('showFoldWarning').onclick()");assert.equal(el('foldWarningDialog').open,true,'banner can reopen details');
 run('flowStep=2;draw()');assert.equal(el('foldWarningDialog').open,false,'leaving the cutline step closes stale warning');
 console.log('PASS missing-fold modal, dismissal without repetition, persistent banner and reopen action');
+
+});
